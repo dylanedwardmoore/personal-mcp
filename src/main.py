@@ -4,6 +4,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from mem0 import Memory
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 import asyncio
 import json
 import os
@@ -48,7 +50,7 @@ mcp = FastMCP(
     lifespan=mem0_lifespan,
     host=os.getenv("HOST", "0.0.0.0"),
     port=os.getenv("PORT", "8050")
-)        
+)
 
 @mcp.tool()
 async def save_memory(ctx: Context, text: str) -> str:
@@ -114,6 +116,53 @@ async def search_memories(ctx: Context, query: str, limit: int = 3) -> str:
         return json.dumps(flattened_memories, indent=2)
     except Exception as e:
         return f"Error searching memories: {str(e)}"
+
+# Add custom routes to the underlying Starlette app
+async def root_endpoint(request):
+    """Root endpoint providing MCP server information."""
+    return JSONResponse({
+        "name": "mcp-mem0",
+        "version": "0.1.0",
+        "description": "MCP server for long term memory storage and retrieval with Mem0",
+        "protocol": "mcp",
+        "transport": os.getenv("TRANSPORT", "sse"),
+        "endpoints": {
+            "sse": "/sse",
+            "health": "/health"
+        },
+        "tools": [
+            {
+                "name": "save_memory",
+                "description": "Save information to long-term memory"
+            },
+            {
+                "name": "get_all_memories",
+                "description": "Retrieve all stored memories"
+            },
+            {
+                "name": "search_memories",
+                "description": "Search memories using semantic search"
+            }
+        ],
+        "status": "running"
+    })
+
+async def health_endpoint(request):
+    """Health check endpoint."""
+    return JSONResponse({"status": "healthy", "service": "mcp-mem0"})
+
+# Add routes to the FastMCP's underlying Starlette app
+# Access the internal Starlette app and add custom routes
+try:
+    # FastMCP uses an internal _app attribute for the Starlette application
+    if hasattr(mcp, '_app'):
+        mcp._app.router.routes.insert(0, Route("/", root_endpoint, methods=["GET"]))
+        mcp._app.router.routes.insert(1, Route("/health", health_endpoint, methods=["GET"]))
+    elif hasattr(mcp, 'sse_app'):
+        mcp.sse_app.router.routes.insert(0, Route("/", root_endpoint, methods=["GET"]))
+        mcp.sse_app.router.routes.insert(1, Route("/health", health_endpoint, methods=["GET"]))
+except Exception as e:
+    print(f"Warning: Could not add custom routes: {e}")
 
 async def main():
     transport = os.getenv("TRANSPORT", "sse")
