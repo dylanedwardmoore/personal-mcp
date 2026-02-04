@@ -123,7 +123,7 @@ async def root_endpoint(request):
     return JSONResponse({
         "name": "mcp-mem0",
         "version": "0.1.0",
-        "description": "MCP server for long term memory storage and retrieval with Mem0",
+        "description": "AnMCP server for long term memory storage and retrieval with Mem0",
         "protocol": "mcp",
         "transport": os.getenv("TRANSPORT", "sse"),
         "endpoints": {
