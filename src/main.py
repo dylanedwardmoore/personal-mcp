@@ -4,11 +4,13 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from mem0 import Memory
+from starlette.applications import Starlette
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Route, Mount
 import asyncio
 import json
 import os
+import uvicorn
 
 from utils import get_mem0_client
 
@@ -123,7 +125,7 @@ async def root_endpoint(request):
     return JSONResponse({
         "name": "mcp-mem0",
         "version": "0.1.0",
-        "description": "AnMCP server for long term memory storage and retrieval with Mem0",
+        "description": "An MCP server for long term memory storage and retrieval with Mem0",
         "protocol": "mcp",
         "transport": os.getenv("TRANSPORT", "sse"),
         "endpoints": {
@@ -144,31 +146,51 @@ async def root_endpoint(request):
                 "description": "Search memories using semantic search"
             }
         ],
-        "status": "running"
+        "status": "MCP server is running",
+        "mcp_endpoint": "/sse"
     })
 
 async def health_endpoint(request):
     """Health check endpoint."""
     return JSONResponse({"status": "healthy", "service": "mcp-mem0"})
 
-# Add routes to the FastMCP's underlying Starlette app
-# Access the internal Starlette app and add custom routes
-try:
-    # FastMCP uses an internal _app attribute for the Starlette application
-    if hasattr(mcp, '_app'):
-        mcp._app.router.routes.insert(0, Route("/", root_endpoint, methods=["GET"]))
-        mcp._app.router.routes.insert(1, Route("/health", health_endpoint, methods=["GET"]))
-    elif hasattr(mcp, 'sse_app'):
-        mcp.sse_app.router.routes.insert(0, Route("/", root_endpoint, methods=["GET"]))
-        mcp.sse_app.router.routes.insert(1, Route("/health", health_endpoint, methods=["GET"]))
-except Exception as e:
-    print(f"Warning: Could not add custom routes: {e}")
-
 async def main():
     transport = os.getenv("TRANSPORT", "sse")
     if transport == 'sse':
-        # Run the MCP server with sse transport
-        await mcp.run_sse_async()
+        # Custom SSE server with additional routes (based on FastMCP's run_sse_async)
+        from mcp.server.sse import SseServerTransport
+
+        sse = SseServerTransport("/messages/")
+
+        async def handle_sse(request):
+            async with sse.connect_sse(
+                request.scope, request.receive, request._send
+            ) as streams:
+                await mcp._mcp_server.run(
+                    streams[0],
+                    streams[1],
+                    mcp._mcp_server.create_initialization_options(),
+                )
+
+        # Create Starlette app with our custom routes PLUS the MCP SSE routes
+        starlette_app = Starlette(
+            debug=mcp.settings.debug,
+            routes=[
+                Route("/", root_endpoint, methods=["GET"]),
+                Route("/health", health_endpoint, methods=["GET"]),
+                Route("/sse", endpoint=handle_sse),
+                Mount("/messages/", app=sse.handle_post_message),
+            ],
+        )
+
+        config = uvicorn.Config(
+            starlette_app,
+            host=mcp.settings.host,
+            port=mcp.settings.port,
+            log_level=mcp.settings.log_level.lower(),
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
     else:
         # Run the MCP server with stdio transport
         await mcp.run_stdio_async()
